@@ -1,0 +1,135 @@
+/*
+ * To change this license header, choose License Headers in Project Properties.
+ * To change this template file, choose Tools | Templates
+ * and open the template in the editor.
+ */
+package com.mycompany.iotproject_m;
+
+import java.io.BufferedReader;
+import java.io.FileNotFoundException;
+import java.io.FileReader;
+import java.io.IOException;
+import java.nio.file.FileSystems;
+import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Map;
+import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaPairRDD;
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.ml.Pipeline;
+import org.apache.spark.ml.PipelineStage;
+import org.apache.spark.ml.classification.MultilayerPerceptronClassificationModel;
+import org.apache.spark.ml.classification.MultilayerPerceptronClassifier;
+import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator;
+import org.apache.spark.ml.feature.IndexToString;
+import org.apache.spark.ml.feature.VectorAssembler;
+
+
+
+import org.apache.spark.mllib.linalg.Vectors;
+import org.apache.spark.mllib.linalg.Vector;
+import org.apache.spark.mllib.classification.LogisticRegressionModel;
+
+import org.apache.spark.mllib.classification.LogisticRegressionWithLBFGS;
+import org.apache.spark.mllib.classification.StreamingLogisticRegressionWithSGD;
+
+import org.apache.spark.mllib.evaluation.MulticlassMetrics;
+import org.apache.spark.mllib.regression.LabeledPoint;
+import org.apache.spark.sql.Column;
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.types.DoubleType;
+import org.apache.spark.streaming.dstream.DStream;
+import org.apache.spark.ml.feature.StringIndexer;
+import org.apache.spark.ml.feature.StringIndexerModel;
+import org.apache.spark.ml.feature.VectorIndexer;
+import org.apache.spark.ml.feature.VectorIndexerModel;
+import org.apache.spark.mllib.linalg.DenseVector;
+import scala.Tuple2;
+
+
+/**
+ *
+ * @author AAA
+ */
+public class MyMlLib {
+    
+    public static void main(String[] args) throws FileNotFoundException, IOException{
+        System.out.println("hi");
+        SparkSession spark = SparkSession
+                .builder()
+                .config("spark.master", "local")
+                .appName("MyMlLib")
+                .getOrCreate();
+        
+        Path path = FileSystems.getDefault().getPath("").toAbsolutePath();
+        String dataFile = path + "\\Data\\train.csv";
+        BufferedReader bf = new BufferedReader(new FileReader(dataFile));
+        String[] tmp = bf.readLine().split(",");
+        String[] features = new String[tmp.length - 1];        
+        System.arraycopy(tmp, 0, features, 0, tmp.length - 1);
+
+        bf.close();
+        
+        VectorAssembler assembler = new VectorAssembler();
+        assembler.setInputCols(features);
+        assembler.setOutputCol("features");
+        
+        
+        Dataset<Row> dataFrame = spark.read().option("header", "true").format("csv").load(dataFile);
+        
+        
+        for(String c : dataFrame.columns()){
+           
+            if(!c.equals("label")){
+                dataFrame = dataFrame.withColumn(c, dataFrame.col(c).cast("double"));
+            }
+        }
+        
+        StringIndexerModel labelIndexer = new StringIndexer().setHandleInvalid("skip").setInputCol("label").setOutputCol("indexedLabel").fit(dataFrame);
+        dataFrame = labelIndexer.transform(dataFrame);
+        dataFrame = assembler.transform(dataFrame);
+        
+        
+        Dataset<Row>[] splits = dataFrame.randomSplit(new double[] {0.8, 0.2}, 1234L);
+        Dataset<Row> train = splits[0];
+        Dataset<Row> test = splits[1];
+        int[] layers = new int[] {115,5,30,6};
+       
+        MultilayerPerceptronClassifier trainer = new MultilayerPerceptronClassifier();
+        trainer.setLayers(layers);
+        trainer.setBlockSize(128);
+        trainer.setTol(1E-5);
+        trainer.setLabelCol("indexedLabel");
+        trainer.setFeaturesCol("features");
+        trainer.setSeed(1234L);
+        trainer.setMaxIter(1000);
+        
+     
+        MultilayerPerceptronClassificationModel model = trainer.fit(train);
+        
+        Dataset<Row> result = model.transform(test);
+
+        Dataset<Row> predictionAndLabels = result.select("prediction", "indexedLabel");
+        predictionAndLabels = labelIndexer.transform(predictionAndLabels);
+        predictionAndLabels.show(1000);
+        MulticlassClassificationEvaluator evaluator = new MulticlassClassificationEvaluator();
+        evaluator.setMetricName("accuracy");
+        
+        evaluator.setLabelCol("indexedLabel");
+        System.out.println("accuracy is : " + evaluator.evaluate(predictionAndLabels));
+        /*IndexToString labelConverter = new IndexToString()
+        .setInputCol("prediction")
+        .setOutputCol("predictedLabel")
+        .setLabels(labelIndexer.labels());
+        */
+      
+        spark.stop();
+        }
+        
+    }
+    
+
+
